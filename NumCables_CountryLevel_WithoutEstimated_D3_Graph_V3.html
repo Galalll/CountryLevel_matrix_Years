@@ -1,0 +1,272 @@
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>D3 Links Over Time (Fixed Shared Scale)</title>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      font-family: sans-serif;
+      display: flex;
+      flex-direction: column;
+      height: 100vh
+    }
+
+    header {
+      padding: 8px 16px;
+      background: #fff;
+      border-bottom: 1px solid #ccc;
+      display: flex;
+      align-items: center;
+      gap: 8px
+    }
+
+    #popup {
+      position: absolute;
+      display: none;
+      background: #fff;
+      border: 1px solid #ccc;
+      padding: 5px 8px;
+      border-radius: 3px;
+      font-size: 12px;
+      box-shadow: 0 0 5px rgba(0, 0, 0, 0.3);
+      pointer-events: none;
+      z-index: 10;
+    }
+
+    svg {
+      flex: 1;
+      width: 100%;
+      background: #f0f0f0
+    }
+
+    .node {
+      stroke: #fff;
+      stroke-width: 1.5px;
+      cursor: pointer
+    }
+
+    .link {
+      stroke-opacity: 0.8;
+      cursor: pointer
+    }
+
+    .nodelabel {
+      font-size: 4px;
+      fill: black;
+      pointer-events: none
+    }
+  </style>
+</head>
+
+<body>
+
+  <header>
+    <label for="yearSlider">Year:</label>
+    <input type="range" id="yearSlider">
+    <span id="yearLabel"></span>
+  </header>
+
+  <div id="popup"></div>
+  <svg></svg>
+
+  <script>
+    (function () {
+      const coordFile = "node_coordinates_Colors.csv";
+      const baseDir = window.location.href.replace(/[^\/]*$/, '');
+
+      let matrixFiles = [];
+      let coordData, coordMap;
+      let capTexts = [], countTexts = [];
+      let maxCapAll = 0, maxCountAll = 0;
+      let sharedScale;
+
+      // 1) Discover count files and derive capacity counterparts
+      fetch(baseDir).then(r => r.text()).then(html => {
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        matrixFiles = Array.from(doc.querySelectorAll('a'))
+          .map(a => a.href)
+          .filter(h => /NumCables_CountryLevel_WithoutEstimated_matrix.*\.csv$/.test(h))
+          .sort((a, b) => a.localeCompare(b));
+        const capFiles = matrixFiles.map(f =>
+          f.replace('NumCables_CountryLevel_WithoutEstimated_matrix', 'Capacity_CountryLevel_WithOutEstimated_matrix')
+        );
+
+        return Promise.all([
+          d3.csv(coordFile),
+          ...matrixFiles.map(f => d3.text(f)),
+          ...capFiles.map(f => d3.text(f))
+        ]);
+      })
+        .then(results => {
+          coordData = results[0];
+          coordData.forEach(d => { d.Cen_X = +d.Cen_X; d.Cen_Y = +d.Cen_Y; });
+          coordMap = new Map(coordData.map(d => [d.COUNTRY, d]));
+
+          const N = matrixFiles.length;
+          countTexts = results.slice(1, 1 + N);
+          capTexts = results.slice(1 + N, 1 + 2 * N);
+
+          // global scan for maxima
+          for (let i = 0; i < N; i++) {
+            const rows = d3.csvParseRows(countTexts[i]);
+            const heads = rows[0];
+            const sums = {}, counts = {};
+            heads.slice(1).forEach(c => { sums[c] = 0; counts[c] = 0; });
+            for (let r = 1; r < rows.length; r++) {
+              const src = rows[r][0];
+              for (let c = 1; c < rows[r].length; c++) {
+                const v = +rows[r][c];
+                if (v > 0 && r < c) {
+                  counts[src]++; counts[heads[c]]++;
+                  sums[src] += v; sums[heads[c]] += v;
+                }
+              }
+            }
+            maxCountAll = Math.max(maxCountAll, d3.max(Object.values(counts)));
+            maxCapAll = Math.max(maxCapAll, d3.max(Object.values(sums)));
+          }
+
+          // build shared scale
+          const globalMax = Math.max(maxCapAll, maxCountAll);
+          sharedScale = d3.scaleSqrt().domain([0, globalMax]).range([2, 20]);
+
+          initSlider();
+        })
+        .catch(console.error);
+
+      function initSlider() {
+        const years = matrixFiles.map(f => +(/_(\d{4})\.csv$/.exec(f)[1])).sort((a, b) => a - b);
+        const s = document.getElementById('yearSlider');
+        const lbl = document.getElementById('yearLabel');
+        s.min = years[0];
+        s.max = years[years.length - 1];
+        s.step = 1;
+        s.value = years[0];
+        lbl.textContent = s.value;
+        s.addEventListener('input', () => {
+          lbl.textContent = s.value;
+          const idx = years.indexOf(+s.value);
+          render(idx);
+        });
+        render(0);
+      }
+
+      function render(idx) {
+        const svg = d3.select('svg');
+        const headerH = document.querySelector('header').offsetHeight;
+        const W = window.innerWidth;
+        const H = window.innerHeight - headerH;
+        const M = 50;
+        svg.selectAll('*').remove();
+
+        // parse this year's count CSV
+        const rows = d3.csvParseRows(countTexts[idx]);
+        const heads = rows[0];
+
+        const xScale = d3.scaleLinear()
+          .domain(d3.extent(coordData, d => d.Cen_X))
+          .range([M, W - M]);
+        const yScale = d3.scaleLinear()
+          .domain(d3.extent(coordData, d => d.Cen_Y))
+          .range([H - M, M]);
+
+        const nodes = heads.slice(1).map(country => {
+          const r = coordMap.get(country) || {};
+          return {
+            id: country,
+            x: r.Cen_X != null ? xScale(r.Cen_X) : W / 2,
+            y: r.Cen_Y != null ? yScale(r.Cen_Y) : H / 2,
+            countSum: 0
+          };
+        });
+        const byId = new Map(nodes.map(n => [n.id, n]));
+
+        const links = [];
+        for (let r = 1; r < rows.length; r++) {
+          const src = rows[r][0];
+          for (let c = 1; c < rows[r].length; c++) {
+            const v = +rows[r][c];
+            if (v > 0 && r < c) {
+              links.push({ source: src, target: heads[c], value: v });
+              byId.get(src).countSum++;
+              byId.get(heads[c]).countSum++;
+            }
+          }
+        }
+
+        const wScale = d3.scaleLinear()
+          .domain(d3.extent(links, d => d.value))
+          .range([0.5, 4]);
+
+        const g = svg.append('g');
+        svg.call(d3.zoom()
+          .extent([[0, 0], [W, H]])
+          .scaleExtent([0.1, 50])
+          .on('zoom', e => g.attr('transform', e.transform)))
+          .on('click', e => {
+            if (e.target === svg.node()) document.getElementById('popup').style.display = 'none';
+          });
+
+        g.selectAll('.link').data(links).enter().append('line')
+          .attr('class', 'link')
+          .attr('x1', d => byId.get(d.source).x)
+          .attr('y1', d => byId.get(d.source).y)
+          .attr('x2', d => byId.get(d.target).x)
+          .attr('y2', d => byId.get(d.target).y)
+          .attr('stroke', d => { const rec = coordMap.get(d.source); return rec && rec.color ? rec.color : 'lightblue'; })
+          .attr('stroke-width', d => wScale(d.value))
+          .on('click', (e, d) => {
+            e.stopPropagation(); showPopup(
+              `<strong>Edge:</strong> ${d.source}→${d.target}<br>` +
+              `<strong>Count:</strong> ${d.value}`, e.pageX, e.pageY
+            );
+          });
+
+        const nodeSel = g.selectAll('.node').data(nodes).enter().append('circle')
+          .attr('class', 'node')
+          .attr('cx', d => d.x)
+          .attr('cy', d => d.y)
+          .attr('r', d => sharedScale(d.countSum))
+          .attr('fill', 'lightblue')
+          .on('click', (e, d) => {
+            e.stopPropagation(); showPopup(
+              `<strong>Node:</strong> ${d.id}<br>` +
+              `<strong>Total Links:</strong> ${d.countSum}`, e.pageX, e.pageY
+            );
+          });
+
+        g.selectAll('.nodelabel').data(nodes).enter().append('text')
+          .attr('class', 'nodelabel')
+          .text(d => d.id)
+          .attr('x', d => d.x + 2)
+          .attr('y', d => d.y + 2);
+
+        nodes.forEach(d => { d.fx = d.x; d.fy = d.y; });
+        d3.forceSimulation(nodes)
+          .force('collide', d3.forceCollide(d => sharedScale(d.countSum) + 5))
+          .on('tick', () => {
+            nodeSel.attr('cx', d => d.x).attr('cy', d => d.y);
+            g.selectAll('.link')
+              .attr('x1', d => byId.get(d.source).x)
+              .attr('y1', d => byId.get(d.source).y)
+              .attr('x2', d => byId.get(d.target).x)
+              .attr('y2', d => byId.get(d.target).y);
+            g.selectAll('.nodelabel')
+              .attr('x', d => d.x + 2)
+              .attr('y', d => d.y + 2);
+          });
+      }
+
+      function showPopup(html, x, y) {
+        const p = document.getElementById('popup');
+        p.innerHTML = html;
+        p.style.left = x + 'px'; p.style.top = y + 'px'; p.style.display = 'block';
+      }
+    })();
+  </script>
+</body>
+
+</html>
