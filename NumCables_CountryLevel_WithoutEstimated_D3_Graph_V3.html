@@ -1,3 +1,4 @@
+<!DOCTYPE html>
 <html lang="en">
 
 <head>
@@ -83,23 +84,22 @@
       let maxCapAll = 0, maxCountAll = 0;
       let sharedScale;
 
-      // 1) Discover count files and derive capacity counterparts
-      fetch(baseDir).then(r => r.text()).then(html => {
-        const doc = new DOMParser().parseFromString(html, 'text/html');
-        matrixFiles = Array.from(doc.querySelectorAll('a'))
-          .map(a => a.href)
-          .filter(h => /NumCables_CountryLevel_WithoutEstimated_matrix.*\.csv$/.test(h))
-          .sort((a, b) => a.localeCompare(b));
-        const capFiles = matrixFiles.map(f =>
-          f.replace('NumCables_CountryLevel_WithoutEstimated_matrix', 'Capacity_CountryLevel_WithOutEstimated_matrix')
-        );
+      // ─── 1) load manifest.json ─────────────────────────────────────────
+      fetch("data/manifest.json")
+        .then(r => r.json())
+        .then(manifest => {
+          // count-files come from manifest.count
+          matrixFiles = manifest.count.map(f => baseDir + "data/" + f);
+          // capacity-files come from manifest.capacity
+          const capFiles = manifest.capacity.map(f => baseDir + "data/" + f);
 
-        return Promise.all([
-          d3.csv(coordFile),
-          ...matrixFiles.map(f => d3.text(f)),
-          ...capFiles.map(f => d3.text(f))
-        ]);
-      })
+          // ─── 2) preload coords + all CSVs ───────────────────────────────
+          return Promise.all([
+            d3.csv(coordFile),
+            ...matrixFiles.map(f => d3.text(f)),
+            ...capFiles.map(f => d3.text(f))
+          ]);
+        })
         .then(results => {
           coordData = results[0];
           coordData.forEach(d => { d.Cen_X = +d.Cen_X; d.Cen_Y = +d.Cen_Y; });
@@ -107,9 +107,9 @@
 
           const N = matrixFiles.length;
           countTexts = results.slice(1, 1 + N);
-          capTexts = results.slice(1 + N, 1 + 2 * N);
+          capTexts   = results.slice(1 + N, 1 + 2 * N);
 
-          // global scan for maxima
+          // ─── global scan for maxima ────────────────────────────────────
           for (let i = 0; i < N; i++) {
             const rows = d3.csvParseRows(countTexts[i]);
             const heads = rows[0];
@@ -126,10 +126,10 @@
               }
             }
             maxCountAll = Math.max(maxCountAll, d3.max(Object.values(counts)));
-            maxCapAll = Math.max(maxCapAll, d3.max(Object.values(sums)));
+            maxCapAll   = Math.max(maxCapAll,   d3.max(Object.values(sums)));
           }
 
-          // build shared scale
+          // ─── build shared scale ────────────────────────────────────────
           const globalMax = Math.max(maxCapAll, maxCountAll);
           sharedScale = d3.scaleSqrt().domain([0, globalMax]).range([2, 20]);
 
@@ -137,19 +137,16 @@
         })
         .catch(console.error);
 
+      // ─── slider & render (unchanged) ─────────────────────────────────
       function initSlider() {
         const years = matrixFiles.map(f => +(/_(\d{4})\.csv$/.exec(f)[1])).sort((a, b) => a - b);
         const s = document.getElementById('yearSlider');
         const lbl = document.getElementById('yearLabel');
-        s.min = years[0];
-        s.max = years[years.length - 1];
-        s.step = 1;
-        s.value = years[0];
+        s.min = years[0]; s.max = years[years.length - 1]; s.step = 1; s.value = years[0];
         lbl.textContent = s.value;
         s.addEventListener('input', () => {
           lbl.textContent = s.value;
-          const idx = years.indexOf(+s.value);
-          render(idx);
+          render(years.indexOf(+s.value));
         });
         render(0);
       }
@@ -219,7 +216,8 @@
           .attr('stroke', d => { const rec = coordMap.get(d.source); return rec && rec.color ? rec.color : 'lightblue'; })
           .attr('stroke-width', d => wScale(d.value))
           .on('click', (e, d) => {
-            e.stopPropagation(); showPopup(
+            e.stopPropagation();
+            showPopup(
               `<strong>Edge:</strong> ${d.source}→${d.target}<br>` +
               `<strong>Count:</strong> ${d.value}`, e.pageX, e.pageY
             );
@@ -232,7 +230,8 @@
           .attr('r', d => sharedScale(d.countSum))
           .attr('fill', 'lightblue')
           .on('click', (e, d) => {
-            e.stopPropagation(); showPopup(
+            e.stopPropagation();
+            showPopup(
               `<strong>Node:</strong> ${d.id}<br>` +
               `<strong>Total Links:</strong> ${d.countSum}`, e.pageX, e.pageY
             );
