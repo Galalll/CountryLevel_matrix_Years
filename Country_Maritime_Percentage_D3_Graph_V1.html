@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Maritime % Node Map by Year (CSV)</title>
+
+  <!-- D3 -->
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+
+  <style>
+    body { margin: 0; padding: 0; font-family: sans-serif; display: flex; flex-direction: column; height: 100vh; }
+    header { padding: 8px 16px; background: #fff; border-bottom: 1px solid #ccc; display: flex; align-items: center; gap: 8px; }
+    input[type="range"] { vertical-align: middle; }
+    #popup { position: absolute; display: none; background: #fff; border: 1px solid #ccc; padding: 5px 8px; border-radius: 3px; font-size: 12px; box-shadow: 0 0 5px rgba(0,0,0,0.3); pointer-events: none; z-index: 10; }
+    svg { flex: 1; width: 100%; background: #f0f0f0; }
+    .node { stroke: #fff; stroke-width: 1.5px; cursor: pointer; }
+    .nodelabel { font-size: 4px; fill: black; pointer-events: none; }
+  </style>
+</head>
+<body>
+
+  <header>
+    <label for="yearSlider">Year:</label>
+    <input type="range" id="yearSlider">
+    <span id="yearLabel"></span>
+  </header>
+
+  <div id="popup"></div>
+  <svg></svg>
+
+  <script>
+  // Popup helpers (unchanged)
+  function showPopup(html, x, y) {
+    const p = document.getElementById("popup");
+    p.innerHTML = html;
+    p.style.left = x + "px";
+    p.style.top  = y + "px";
+    p.style.display = "block";
+  }
+  function hidePopup() {
+    document.getElementById("popup").style.display = "none";
+  }
+
+  // ─── 1) load manifest.json ─────────────────────────────────────────
+  (function() {
+    // coordFile also lives in data/
+    const coordFile = "data/node_coordinates_Colors.csv";
+
+    fetch("data/manifest.json")
+      .then(r => r.json())
+      .then(manifest => {
+        // build full URLs
+        const files = manifest.percentage.map(f => "data/" + f);
+        init(files, coordFile);
+      })
+      .catch(console.error);
+  })();
+
+  // init and renderNodes logic—all unchanged except signature
+  function init(files, coordFile) {
+    const years = files.map(f => +f.match(/_(\d{4})\.csv$/)[1]).sort((a,b)=>a-b);
+    const slider = d3.select('#yearSlider')
+      .attr('min', years[0])
+      .attr('max', years[years.length-1])
+      .attr('step', 1)
+      .property('value', years[0]);
+    const label = d3.select('#yearLabel').text(years[0]);
+
+    slider.on('input', function() {
+      const y = +this.value;
+      label.text(y);
+      const file = files.find(f => f.endsWith(`_${y}.csv`));
+      if (file) renderNodes(file, coordFile);
+    });
+
+    // first draw
+    renderNodes(files[0], coordFile);
+  }
+
+  function renderNodes(dataFile, coordFile) {
+    const svg = d3.select('svg');
+    const headerH = document.querySelector('header').offsetHeight;
+    const W = window.innerWidth, H = window.innerHeight - headerH, M = 40;
+    svg.selectAll('*').remove();
+
+    Promise.all([
+      d3.csv(coordFile),
+      d3.csv(dataFile)
+    ]).then(([coords, summary]) => {
+      coords.forEach(d => {
+        d.Cen_X = +d.Cen_X;
+        d.Cen_Y = +d.Cen_Y;
+      });
+
+      const coordMap = new Map(coords.map(d => [d.COUNTRY, d]));
+      const xScale = d3.scaleLinear()
+        .domain(d3.extent(coords, d => d.Cen_X))
+        .range([M, W - M]);
+      const yScale = d3.scaleLinear()
+        .domain(d3.extent(coords, d => d.Cen_Y))
+        .range([H - M, M]);
+
+      // Build nodes from summary CSV
+      const perPercent = 0.3;  // unchanged sizing logic
+      const nodes = summary.map(d => {
+        const rec = coordMap.get(d.Country) || {};
+        return {
+          id:    d.Country,
+          pct:   +d.WeightedPct,
+          x:     rec.Cen_X !== undefined ? xScale(rec.Cen_X) : W/2,
+          y:     rec.Cen_Y !== undefined ? yScale(rec.Cen_Y) : H/2,
+          color: rec.color    || 'steelblue'
+        };
+      });
+
+      const g = svg.append('g');
+      svg.call(
+        d3.zoom()
+          .scaleExtent([0.5, 20])
+          .on('zoom', e => g.attr('transform', e.transform))
+      ).on('click', e => {
+        if (e.target === svg.node()) hidePopup();
+      });
+
+      // Draw nodes (unchanged)
+      g.selectAll('.node').data(nodes).enter().append('circle')
+        .attr('class', 'node')
+        .attr('cx', d=>d.x)
+        .attr('cy', d=>d.y)
+        .attr('r',  d=>1 + (d.pct * perPercent))
+        .attr('fill', d=>d.color)
+        .on('click', (e,d)=> {
+          e.stopPropagation();
+          showPopup(
+            `<strong>${d.id}</strong><br/>Weighted %: ${d.pct.toFixed(1)}%`,
+            e.pageX, e.pageY
+          );
+        });
+
+      // Labels (unchanged)
+      g.selectAll('.nodelabel').data(nodes).enter().append('text')
+        .attr('class', 'nodelabel')
+        .text(d=>d.id)
+        .attr('x', d=>d.x + 2)
+        .attr('y', d=>d.y + 2);
+    })
+    .catch(console.error);
+  }
+  </script>
+</body>
+</html>
