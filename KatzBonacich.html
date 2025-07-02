@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Katz–Bonacich Node Map by Year (Fixed Shared Scale)</title>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <style>
+    body { margin:0; padding:0; font-family:sans-serif; display:flex; flex-direction:column; height:100vh; }
+    header { padding:8px 16px; background:#fff; border-bottom:1px solid #ccc; display:flex; align-items:center; gap:8px; }
+    input[type="range"] { vertical-align:middle; }
+    #popup { position:absolute; display:none; background:#fff; border:1px solid #ccc; padding:5px 8px; border-radius:3px; font-size:12px; box-shadow:0 0 5px rgba(0,0,0,0.3); pointer-events:none; z-index:10; }
+    svg { flex:1; width:100%; background:#f0f0f0; }
+    .node { stroke:#fff; stroke-width:1.5px; cursor:pointer; }
+    .nodelabel { font-size:4px; fill:black; pointer-events:none; }
+  </style>
+</head>
+<body>
+
+  <header>
+    <label for="yearSlider">Year:</label>
+    <input type="range" id="yearSlider" />
+    <span id="yearLabel"></span>
+  </header>
+
+  <div id="popup"></div>
+  <svg></svg>
+
+  <script>
+  // popup helpers
+  function showPopup(html, x, y) {
+    const p = document.getElementById("popup");
+    p.innerHTML = html;
+    p.style.left = x + "px";
+    p.style.top  = y + "px";
+    p.style.display = "block";
+  }
+  function hidePopup() {
+    document.getElementById("popup").style.display = "none";
+  }
+
+  (function(){
+    const manifestUrl = "data/manifest.json";
+    const coordFile   = "data/node_coordinates_Colors.csv";
+
+    fetch(manifestUrl)
+      .then(r => r.json())
+      .then(manifest => {
+        // use the "katzBonacich" array in your manifest.json
+        const files = manifest.katzBonacich.map(f => "data/" + f);
+
+        // preload coord CSV + each Katz–Bonacich CSV
+        return Promise.all([
+          d3.csv(coordFile),
+          ...files.map(f => d3.csv(f))
+        ]).then(results => {
+          const coordData = results[0];
+          const summaries = results.slice(1); // array of arrays
+
+          // parse coords
+          coordData.forEach(d => { d.Cen_X = +d.Cen_X; d.Cen_Y = +d.Cen_Y; });
+          const coordMap = new Map(coordData.map(d => [d.COUNTRY, d]));
+
+          // compute global min/max of Katz–Bonacich
+          const allVals = summaries.flatMap(arr =>
+            arr.map(d => +d.KatzBonacich)
+          );
+          const minVal = d3.min(allVals),
+                maxVal = d3.max(allVals);
+
+          // shared radius scale
+          const radiusScale = d3.scaleLinear()
+            .domain([minVal, maxVal])
+            .range([1, 10]);
+
+          // init slider & render
+          init(files, coordData, coordMap, summaries, radiusScale);
+        });
+      })
+      .catch(console.error);
+  })();
+
+  function init(files, coordData, coordMap, summaries, radiusScale) {
+    const years = files.map(f => +f.match(/(\d{4})\.csv$/)[1])
+                       .sort((a,b) => a - b);
+
+    const slider = d3.select('#yearSlider')
+      .attr('min', years[0])
+      .attr('max', years[years.length-1])
+      .attr('step', 1)
+      .property('value', years[0]);
+    d3.select('#yearLabel').text(years[0]);
+
+    slider.on('input', function() {
+      const y = +this.value;
+      d3.select('#yearLabel').text(y);
+      const idx = years.indexOf(y);
+      if (idx >= 0) {
+        renderNodes(
+          coordData,
+          coordMap,
+          summaries[idx],    // the Katz–Bonacich data for that year
+          radiusScale
+        );
+      }
+    });
+
+    // initial draw
+    renderNodes(coordData, coordMap, summaries[0], radiusScale);
+  }
+
+  function renderNodes(coordData, coordMap, data, radiusScale) {
+    const svg = d3.select('svg');
+    const headerH = document.querySelector('header').offsetHeight;
+    const W = window.innerWidth, H = window.innerHeight - headerH, M = 50;
+    svg.selectAll('*').remove();
+
+    // coordinate scales
+    const xScale = d3.scaleLinear()
+      .domain(d3.extent(coordData, d=>d.Cen_X))
+      .range([M, W - M]);
+    const yScale = d3.scaleLinear()
+      .domain(d3.extent(coordData, d=>d.Cen_Y))
+      .range([H - M, M]);
+
+    // build nodes from two-column CSV
+    const nodes = data.map(d => {
+      const rec = coordMap.get(d.Country) || {};
+      return {
+        id:    d.Country,
+        val:   +d.KatzBonacich,
+        x:     rec.Cen_X != null ? xScale(rec.Cen_X) : W/2,
+        y:     rec.Cen_Y != null ? yScale(rec.Cen_Y) : H/2,
+        color: rec.color || 'steelblue'
+      };
+    });
+
+    const g = svg.append('g');
+    svg.call(
+      d3.zoom()
+        .extent([[0,0],[W,H]])
+        .scaleExtent([0.5,20])
+        .on('zoom', e => g.attr('transform', e.transform))
+    ).on('click', e => {
+      if (e.target === svg.node()) hidePopup();
+    });
+
+    // draw circles sized by Katz–Bonacich centrality
+    g.selectAll('.node').data(nodes).enter().append('circle')
+      .attr('class','node')
+      .attr('cx', d=>d.x)
+      .attr('cy', d=>d.y)
+      .attr('r',  d=> radiusScale(d.val) )
+      .attr('fill', d=>d.color)
+      .on('click', (e,d) => {
+        e.stopPropagation();
+        showPopup(
+          `<strong>${d.id}</strong><br/>Katz–Bonacich: ${d.val}`,
+          e.pageX, e.pageY
+        );
+      });
+
+    // labels
+    g.selectAll('.nodelabel').data(nodes).enter().append('text')
+      .attr('class','nodelabel')
+      .text(d=>d.id)
+      .attr('x', d=>d.x + 2)
+      .attr('y', d=>d.y + 2);
+  }
+  </script>
+</body>
+</html>
